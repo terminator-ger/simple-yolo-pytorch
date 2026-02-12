@@ -11,7 +11,7 @@ import albumentations as AT
 from albumentations.pytorch import ToTensorV2
 import xml.etree.ElementTree as ET
 
-from utils import xyxy_to_xywh
+from ..utils import xyxy_to_xywh
 
 
 class BaseDataset(Dataset):

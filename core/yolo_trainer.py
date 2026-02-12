@@ -10,7 +10,7 @@ from torch.cuda import amp
 from torchvision.ops import nms, batched_nms
 
 from .base_trainer import BaseTrainer
-from utils import (get_det_metrics, sampler_set_epoch, xywh_to_xyxy)
+from ..utils import (get_det_metrics, sampler_set_epoch, xywh_to_xyxy)
 
 
 class YOLOTrainer(BaseTrainer):
@@ -22,7 +22,7 @@ class YOLOTrainer(BaseTrainer):
         if config.task == 'debug':
             from .loss import get_loss_fn
             self.loss_fn = get_loss_fn(config, self.device)
-
+    
     def train_one_epoch(self, config):
         self.model.train()
 

@@ -1,6 +1,6 @@
 import argparse
 
-from datasets import list_available_datasets
+from ..datasets import list_available_datasets
 
 
 def load_parser(config):

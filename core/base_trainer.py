@@ -3,9 +3,8 @@ import torch
 from torch.cuda import amp
 from copy import deepcopy
 from .loss import get_loss_fn
-from models import get_model
-from datasets import get_loader, get_test_loader
-from utils import (get_optimizer, get_scheduler, parallel_model, de_parallel, 
+from ..models import get_model
+from ..utils import (get_optimizer, get_scheduler, parallel_model, de_parallel, 
                     get_ema_model, set_seed, set_device, get_writer, get_logger, 
                     destroy_ddp_process, mkdir, save_config, log_config,)
 

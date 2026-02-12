@@ -9,7 +9,7 @@ class MyConfig(BaseConfig):
 
         # VOC
         self.dataset = 'voc'
-        self.data_root = '/path/to/your/dataset'
+        self.data_root = 'E:\\data\\pascal_voc\\VOCdevkit2007\\VOC2007'
         self.num_class = 20
         self.train_voc2007 = True
         self.train_voc2012 = True
