@@ -1,18 +1,17 @@
 from .base_config import BaseConfig
-
+import torch as th
 
 class MyConfig(BaseConfig):
     def __init__(self,):
         super().__init__()
         # Task
-        self.task = 'train'
+        self.task = 'train' # train, val, predict, debug
 
         # VOC
-        self.dataset = 'voc'
-        self.data_root = '/path/to/your/dataset'
-        self.num_class = 20
-        self.train_voc2007 = True
-        self.train_voc2012 = True
+        self.dataset = 'gosyn'
+        #self.data_root = "/media/michael/Data/dev/pygo_synthetic/renders_new/"
+        self.data_root = "/media/michael/SSD/data/renders/"
+        self.num_class = 2
 
         # Model
         self.model = 'yolo'
@@ -20,9 +19,11 @@ class MyConfig(BaseConfig):
         self.channel_sparsity = 0.75
 
         # Training
-        self.total_epoch = 400
-        self.train_bs = 24
+        self.total_epoch = 200
+        self.train_bs = 6
         self.optimizer_type = 'adam'
+        self.base_lr = 1e-2
+        self.freeze_backbone = False
 
         # Validating
         self.val_bs = 16
@@ -34,7 +35,7 @@ class MyConfig(BaseConfig):
         self.lambda_coord = 0.1
         self.lambda_obj = 1.0
         self.lambda_noobj = 0.5
-        self.lambda_scales = [1.0, 1.0, 1.0]
+        self.lambda_scales = [1.0, 1.0, 1.0, 1.0]
         self.use_noobj_loss = False
         self.iou_loss_type = 'ciou'
         self.focal_loss_gamma = 3.5
@@ -45,12 +46,25 @@ class MyConfig(BaseConfig):
         # Testing (VOC)
         self.is_testing = False
         self.test_bs = 1
-        self.test_data_folder = 'imgs'
+        self.test_data_folder = 'data/images/val'
         self.test_conf_thrs = 0.4
-        class_map = {'aeroplane':0, 'bicycle':1, 'bird':2, 'boat':3, 'bottle':4, 'bus':5, 'car':6, 'cat':7,
-                    'chair':8, 'cow':9, 'diningtable':10, 'dog':11, 'horse':12, 'motorbike':13, 'person':14,
-                    'pottedplant':15, 'sheep':16, 'sofa':17, 'train':18, 'tvmonitor':19}
+        class_map = {'black':0, 'white':1,}
         self.class_map = {v:k for k,v in class_map.items()}
 
         # Training setting
         self.use_ema = True
+
+        # Scheduler
+        self.lr_policy = 'cos_warmup'
+        self.warmup_epochs = 3
+
+        self.anchor_boxes = [[[19, 11], [20, 16], [28, 14]],
+                             [[29, 17], [29, 20], [28, 23]],
+                             [[41, 19], [29, 28], [41, 23]],
+                             [[43, 27], [42, 31], [42, 39]]
+                            ]
+    
+        self.load_ckpt_path = None#'yolov5_voc_pretrain.pth'
+
+        self.downsample_rate = [4, 8, 16, 32]
+        self.p2 = True

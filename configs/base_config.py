@@ -23,6 +23,7 @@ class BaseConfig:
         self.total_epoch = 300
         self.base_lr = 0.01
         self.train_bs = 16          # For each GPU
+        self.freeze_backbone = False
 
         # Validating
         self.val_bs = 16            # For each GPU
@@ -34,7 +35,7 @@ class BaseConfig:
 
         # Testing
         self.test_bs = 16
-        self.test_data_folder = None
+        self.test_data_folder = 'data/images/val'
         self.test_conf_thrs = 0.2
         self.test_iou = 0.4
         self.class_map = None
@@ -79,17 +80,17 @@ class BaseConfig:
         self.amp_training = False
         self.resume_training = True
         self.load_ckpt = True
-        self.load_ckpt_path = None
+        self.load_ckpt_path = None#'yolov5_voc_pretrain.pth'
         self.base_workers = 8
         self.random_seed = 1
-        self.use_ema = False
+        self.use_ema = True
 
         # YOLO setting
         self.anchor_boxes = None
 
         # Augmentation
-        self.img_size = [512, 512]      # W, H
-        self.randscale = [-0.5, 1.0]
+        self.img_size = [640,640]      # W, H
+        self.randscale = [-0.2, 0.2]
         self.perspective_range = [0.05, 0.1]
         self.perspective_p = 0.
         self.rotate_limit = [-90, 90]
@@ -99,7 +100,7 @@ class BaseConfig:
         self.saturation = 0.5
         self.hue = 0.
         self.h_flip = 0.5
-        self.mosaic_p = 1.0
+        self.mosaic_p = 0.0
 
         # DDP
         self.synBN = False
@@ -118,10 +119,13 @@ class BaseConfig:
                                 # Small anchor boxes
                                 [[10,13], [16,30], [33,23]],
                                 # Medium anchor boxes
-                                [[30,61], [62,45], [59,119]],
+                                [[30,61], [40,30], [59,119]],
                                 # Large anchor boxes
-                                [[116,90], [156,198], [373,326]]
+                                [[116,90], [50,35], [373,326]]
                                 ]
+            
+
+
         else:
             assert len(self.anchor_boxes) > 0
 

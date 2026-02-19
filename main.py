@@ -1,4 +1,4 @@
-from core import YOLOTrainer
+from yolo.core import YOLOTrainer
 from configs import MyConfig, load_parser
 
 import warnings
