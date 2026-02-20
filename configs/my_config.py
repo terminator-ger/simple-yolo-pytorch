@@ -5,7 +5,7 @@ class MyConfig(BaseConfig):
     def __init__(self,):
         super().__init__()
         # Task
-        self.task = 'train' # train, val, predict, debug
+        self.task = 'predict' # train, val, predict, debug
 
         # VOC
         self.dataset = 'gosyn'
@@ -19,11 +19,11 @@ class MyConfig(BaseConfig):
         self.channel_sparsity = 0.75
 
         # Training
-        self.total_epoch = 200
-        self.train_bs = 6
+        self.total_epoch = 70
+        self.train_bs = 4
         self.optimizer_type = 'adam'
         self.base_lr = 1e-2
-        self.freeze_backbone = False
+        self.freeze_backbone = True
 
         # Validating
         self.val_bs = 16
@@ -35,7 +35,7 @@ class MyConfig(BaseConfig):
         self.lambda_coord = 0.1
         self.lambda_obj = 1.0
         self.lambda_noobj = 0.5
-        self.lambda_scales = [1.0, 1.0, 1.0, 1.0]
+        self.lambda_scales = [1.0, 1.0, 1.0]
         self.use_noobj_loss = False
         self.iou_loss_type = 'ciou'
         self.focal_loss_gamma = 3.5
@@ -46,7 +46,8 @@ class MyConfig(BaseConfig):
         # Testing (VOC)
         self.is_testing = False
         self.test_bs = 1
-        self.test_data_folder = 'data/images/val'
+        self.test_data_folder = 'pred_images'
+        #self.test_data_folder = 'data/images/val'
         self.test_conf_thrs = 0.4
         class_map = {'black':0, 'white':1,}
         self.class_map = {v:k for k,v in class_map.items()}
@@ -58,13 +59,19 @@ class MyConfig(BaseConfig):
         self.lr_policy = 'cos_warmup'
         self.warmup_epochs = 3
 
-        self.anchor_boxes = [[[19, 11], [20, 16], [28, 14]],
-                             [[29, 17], [29, 20], [28, 23]],
-                             [[41, 19], [29, 28], [41, 23]],
-                             [[43, 27], [42, 31], [42, 39]]
+        self.anchor_boxes = [#[[19, 11], [20, 16], [28, 14]],
+                             #[[29, 17], [29, 20], [28, 23]],
+                             #[[41, 19], [29, 28], [41, 23]],
+                             #[[43, 27], [42, 31], [42, 39]]
+                            [[4,  6], [6, 10], [8, 14]],
+                            [[12,16], [16,22], [20,28]],
+                            [[24,32], [28,40], [32,48]]
                             ]
     
-        self.load_ckpt_path = None#'yolov5_voc_pretrain.pth'
+        self.load_ckpt_path = 'save/run_0004/best.pth' # 'yolov5_voc_pretrain.pth'
 
-        self.downsample_rate = [4, 8, 16, 32]
-        self.p2 = True
+        self.downsample_rate = [8, 16, 32]
+        self.p2 = False
+
+
+        self.img_size = [640,640]      # W, H

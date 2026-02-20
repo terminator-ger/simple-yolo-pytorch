@@ -29,15 +29,15 @@ class BaseConfig:
         self.val_bs = 16            # For each GPU
         self.begin_val_epoch = 0    # Epoch to start validation
         self.val_interval = 1       # Epoch interval between validation
-        self.conf_thrs = 0.001
-        self.max_nms_num = 100
-        self.val_iou = 0.6
+        self.conf_thrs = 0.4
+        self.max_nms_num = 19*19
+        self.val_iou = 0.1
 
         # Testing
         self.test_bs = 16
         self.test_data_folder = 'data/images/val'
-        self.test_conf_thrs = 0.2
-        self.test_iou = 0.4
+        self.test_conf_thrs = self.conf_thrs
+        self.test_iou = self.val_iou
         self.class_map = None
         self.color_map = None
 

@@ -1,4 +1,5 @@
 import os
+import glob
 import torch
 from torch.cuda import amp
 from copy import deepcopy
@@ -7,7 +8,7 @@ from yolo.models import get_model
 from yolo.datasets import get_loader, get_test_loader
 from yolo.utils import (get_optimizer, get_scheduler, parallel_model, de_parallel, 
                     get_ema_model, set_seed, set_device, get_writer, get_logger, 
-                    destroy_ddp_process, mkdir, save_config, log_config,)
+                    destroy_ddp_process, mkdir, save_config, log_config,setup_save_dir)
 
 
 class BaseTrainer:
@@ -22,6 +23,7 @@ class BaseTrainer:
         self.world_size = int(os.getenv('WORLD_SIZE', 1))
         config.DDP = self.local_rank != -1
         self.main_rank = self.local_rank in [-1, 0]
+        config = setup_save_dir(config, self.main_rank)
 
         # Logger compatible with ddp training
         self.logger = get_logger(config, self.main_rank)
@@ -32,11 +34,7 @@ class BaseTrainer:
         # Automatic mixed precision training scaler
         self.scaler = amp.GradScaler(enabled=config.amp_training)
 
-        # Create directory to save checkpoints and logs
-        if self.main_rank:
-            mkdir(config.save_dir)
 
-        # Set random seed to obtain reproducible results
         set_seed(config.random_seed)
 
         # Define model and put it to the selected device
@@ -162,7 +160,7 @@ class BaseTrainer:
         return checkpoint
 
     def load_ckpt(self, config):
-        if config.load_ckpt and os.path.isfile(config.load_ckpt_path):
+        if config.load_ckpt and (os.path.isfile(config.load_ckpt_path) or os.path.islink(config.load_ckpt_path)):
             checkpoint = torch.load(config.load_ckpt_path, map_location=torch.device(self.device))
             checkpoint = self.match_checkpoint_shape(checkpoint)
             self.model.load_state_dict(checkpoint['state_dict'])

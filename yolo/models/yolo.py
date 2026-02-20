@@ -14,7 +14,7 @@ from .mresnet import modify_resnet
 
 class YOLO(nn.Module):
     def __init__(self, num_class=1, backbone_type='resnet18', label_assignment_method='nearby_grid', 
-                    anchor_boxes=None, act_type='relu', channel_sparsity=0.75, p2=True, downsample_rate=None):
+                    anchor_boxes=None, act_type='relu', channel_sparsity=0.75, p2=False, downsample_rate=None):
         super().__init__()
         assert label_assignment_method in ['single_grid', 'all_grid', 'nearby_grid']
 
@@ -56,7 +56,7 @@ class YOLO(nn.Module):
 
 
 class YOLOHead(nn.Module):
-    def __init__(self, in_channel, num_class, label_assignment_method, anchor_boxes, p2=True, downsample_rate=None):
+    def __init__(self, in_channel, num_class, label_assignment_method, anchor_boxes, p2=False, downsample_rate=None):
         super().__init__()
         self.label_assignment_method = label_assignment_method
         self.p2 = p2
@@ -75,12 +75,12 @@ class YOLOHead(nn.Module):
         self.heads = nn.ModuleList([conv1x1(in_channel//2**((N-1)-i), out_channel) for i in range(N)])
 
     def forward(self, feats, is_training=True):
-        device = feats[0].device
-
+        device = feats[1].device
+        if feats[0] is None:
+            feats = feats[1:]
+ 
         out = []
         for i, head in enumerate(self.heads):
-            if head is None:
-                continue
             feat = head(feats[i])
             batch_size, _, grid_h, grid_w = feat.size()
             feat = feat.view(batch_size, self.num_anchor, self.num_attrib, grid_h, grid_w)

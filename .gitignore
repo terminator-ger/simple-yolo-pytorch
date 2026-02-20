@@ -3,3 +3,4 @@ save
 **/__pycache__
 **.egg-info
 data_pose
+pred_images

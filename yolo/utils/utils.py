@@ -1,5 +1,27 @@
 import os, random, torch, json
 import numpy as np
+import glob
+
+def setup_save_dir(config, main_rank):
+    # Create directory to save checkpoints and logs with incremented run number
+    # Find the next available run number
+    if main_rank and config.task in ['train', 'debug']:
+            existing_runs = glob.glob(os.path.join(config.save_dir, 'run_*'))
+            run_numbers = []
+            if len(existing_runs) != 0:
+                for run_path in existing_runs:
+                    try:
+                        run_numbers.append(int(os.path.basename(run_path).split('_')[1]))
+                    except (ValueError, IndexError):
+                        continue
+            
+            next_run_num = max(run_numbers) + 1 if len(run_numbers) > 0 else 1
+            config.save_dir = os.path.join(config.save_dir, f'run_{next_run_num:04d}')
+            
+            os.makedirs(config.save_dir, exist_ok=True)
+            if config.use_tb:
+                config.tb_log_dir = os.path.join(config.save_dir, 'tb_logs')
+    return config
 
 def xyxy_to_xywh(xyxy):
     if not isinstance(xyxy, (torch.Tensor, np.ndarray)):
