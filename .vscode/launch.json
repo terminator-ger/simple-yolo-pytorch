@@ -11,6 +11,7 @@
             "request": "launch",
             "program": "main.py",
             "console": "integratedTerminal",
+            "justMyCode": true,
             "env": {
                 "PYTHONPATH":"/home/michael/data/dev/simple-yolo-pytorch/yolo"
             }

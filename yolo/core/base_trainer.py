@@ -160,7 +160,7 @@ class BaseTrainer:
         return checkpoint
 
     def load_ckpt(self, config):
-        if config.load_ckpt and (os.path.isfile(config.load_ckpt_path) or os.path.islink(config.load_ckpt_path)):
+        if config.load_ckpt and config.load_ckpt_path is not None and (os.path.isfile(config.load_ckpt_path) or os.path.islink(config.load_ckpt_path)):
             checkpoint = torch.load(config.load_ckpt_path, map_location=torch.device(self.device))
             checkpoint = self.match_checkpoint_shape(checkpoint)
             self.model.load_state_dict(checkpoint['state_dict'])

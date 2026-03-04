@@ -27,6 +27,7 @@ def get_loader(config, rank, pin_memory=True):
         train_sampler = DistributedSampler(train_dataset, num_replicas=config.gpu_num, 
                                             rank=rank, shuffle=True)
         val_sampler = DistributedSampler(val_dataset, num_replicas=config.gpu_num,
+                                    drop_last=True,
                                             rank=rank, shuffle=False)
 
         train_loader = DataLoader(train_dataset, batch_size=config.train_bs, shuffle=False, 
@@ -36,6 +37,7 @@ def get_loader(config, rank, pin_memory=True):
 
         val_loader = DataLoader(val_dataset, batch_size=config.val_bs, shuffle=False,
                                     num_workers=config.num_workers, pin_memory=pin_memory,
+                                    drop_last=True,
                                     sampler=val_sampler, collate_fn=val_dataset.collate_func)
     else:
         train_loader = DataLoader(train_dataset, batch_size=config.train_bs, 
@@ -43,7 +45,8 @@ def get_loader(config, rank, pin_memory=True):
                                     collate_fn=train_dataset.collate_func)
 
         val_loader = DataLoader(val_dataset, batch_size=config.val_bs, 
-                                    shuffle=False, num_workers=config.num_workers,
+                                drop_last=True,
+                                    shuffle=True, num_workers=config.num_workers,
                                     collate_fn=val_dataset.collate_func)
 
     return train_loader, val_loader

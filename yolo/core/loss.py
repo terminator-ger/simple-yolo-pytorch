@@ -3,11 +3,14 @@ Create by:  zh320
 Date:       2024/06/15
 """
 
+import logging
+
 import torch, math
 import torch.nn as nn
 import torch.nn.functional as F
 
 from yolo.utils import xywh_to_xyxy, box_iou
+from yolo.models.yolo import ModelOutputKeys
 
 
 def get_loss_fn(config):
@@ -22,10 +25,10 @@ def get_loss_fn(config):
 
 
 class YOLOLoss(nn.Module):
-    def __init__(self, num_class, img_size, anchor_boxes, lambda_coord=0.05, lambda_obj=1.0, lambda_noobj=0.5, 
+    def __init__(self, num_class, img_size, anchor_boxes, lambda_coord=0.05, lambda_obj=1.0, lambda_noobj=0.5, lambda_kp=1.0, 
                     lambda_scales=[4.0, 1.0, 0.25], use_noobj_loss=False, label_assignment_method='nearby_grid', 
                     grid_sizes=None, iou_loss_type='iou', focal_loss_gamma=0., match_iou_thres=0.0625, 
-                    downsample_rate=[8, 16, 32], assign_conf_method='iou', filter_by_max_iou=True):
+                    downsample_rate=[8, 16, 32], assign_conf_method='iou', filter_by_max_iou=True, kp_shape=(4,2)):
         super().__init__()
         assert label_assignment_method in ['single_grid', 'all_grid', 'nearby_grid']
         self.label_assignment_method = label_assignment_method
@@ -39,10 +42,12 @@ class YOLOLoss(nn.Module):
         self.lambda_obj = lambda_obj
         self.lambda_noobj = lambda_noobj
         self.lambda_scales = lambda_scales
+        self.lambda_kp = lambda_kp
         self.use_noobj_loss = use_noobj_loss
         self.match_iou_thres = match_iou_thres
         self.downsample_rate = downsample_rate
         self.filter_by_max_iou = filter_by_max_iou
+        self.kp_shape = kp_shape
 
         self.num_anchor_per_grid = len(anchor_boxes[0])
         self.register_buffer('anchor_boxes', torch.stack([torch.tensor(anch, dtype=torch.float32).view(1, self.num_anchor_per_grid, 1, 1, 2) \
@@ -78,7 +83,150 @@ class YOLOLoss(nn.Module):
 
         return anchor_grid
 
-    def forward(self, predictions, bboxes, classes):
+    def forward(self, predictions, targets):
+        if ModelOutputKeys.Detections not in predictions:
+            raise KeyError("Could not find key 'Detections' in predictions")
+        
+        device = predictions[ModelOutputKeys.Detections][0].device
+
+        for k in targets.keys():
+            targets[k] = targets[k].to(device)
+
+        total_loss, loss_dict = self.forward_bboxes(predictions=predictions[ModelOutputKeys.Detections], 
+                                                    bboxes=targets['bboxes'], 
+                                                    classes=targets['classes'])
+
+        if "keypoints" in targets:
+            kp_loss, kp_loss_dict = self.forward_keypoints(predictions=predictions[ModelOutputKeys.Detections], 
+                                                           gt_kps=targets['keypoints'], 
+                                                           gt_kp_boxes=targets['keypoints_bboxes'], 
+                                                           classes=targets['keypoints_classes'])
+            total_loss += self.lambda_kp * kp_loss
+            loss_dict.update(kp_loss_dict)
+        
+        return total_loss, loss_dict
+
+    def forward_keypoints(self, predictions, gt_kps, classes, gt_kp_boxes):
+        device = predictions[0].device
+        batch_size = predictions[0].shape[0]
+        num_kpts = predictions[0].shape[1]
+        num_pred_layer = len(predictions)
+        
+        class_loss = torch.tensor(0., device=device, dtype=predictions[0].dtype)
+        iou_loss   = torch.tensor(0., device=device, dtype=predictions[0].dtype)
+        kp_loss    = torch.tensor(0., device=device, dtype=predictions[0].dtype)
+ 
+        #assigned_labels = self.label_assignment(bboxes, classes, batch_size, num_pred_layer)
+        #assert len(predictions) == len(assigned_labels)
+        if num_kpts:
+            assigned_labels = self.label_assignment_kp(gt_kp_boxes, gt_kps, classes, batch_size, num_pred_layer)
+            assert len(predictions) == len(assigned_labels)
+
+
+        total_loss, conf_loss_value, iou_loss_value, class_loss_value, kp_loss_value = 0., 0., 0., 0., 0.
+        for i in range(num_pred_layer):
+            # Extract predicted confidence scores
+            predicted = predictions[i]
+            pred_conf = predicted[..., 0]
+            assigned_conf = torch.zeros_like(pred_conf, device=device)
+            
+            if num_kpts:
+                # Extract predicted box coordinates and class probabilities
+                pred_x_box = predicted[..., 1][...,None]
+                pred_y_box = predicted[..., 2][...,None]
+                pred_wh = predicted[..., 3:5]
+                pred_x = predicted[...,5::2]
+                pred_y = predicted[...,6::2]
+                #pred_class = predicted[..., 5+num_kpts*2:]
+
+                # Calculate x_shift and y_shift to decode predicted box coordinates
+                grid_h, grid_w = predicted.size()[2:4]
+                x_shift = torch.arange(grid_w).view(1, 1, 1, grid_w).repeat(batch_size, num_kpts, grid_h, 1).to(device)
+                y_shift = torch.arange(grid_h).view(1, 1, grid_h, 1).repeat(batch_size, num_kpts, 1, grid_w).to(device)
+                x_shift = x_shift.unsqueeze(-1)
+                y_shift = y_shift.unsqueeze(-1)
+
+                assigned = assigned_labels[i].to(device)
+                assigned_conf = assigned[..., 0]
+                assigned_coord = assigned[..., 1:5]
+                assigned_kp = assigned[..., 5:]
+                #assigned_class = assigned[..., 5:]
+                # Only consider positive examples for iou loss and class loss
+                pos_mask = assigned_conf > 0
+
+                # Compute IoU loss for normalized bounding box coordinates (need to avoid in-place operation)
+                if self.label_assignment_method == 'single_grid':
+                    pred_x_box_decode = (pred_x_box.sigmoid() + x_shift) * self.downsample_rate[i] / self.img_size[0]
+                    pred_y_box_decode = (pred_y_box.sigmoid() + y_shift) * self.downsample_rate[i] / self.img_size[1]
+                    pred_x_decode = (pred_x.sigmoid() + x_shift) * self.downsample_rate[i] / self.img_size[0]
+                    pred_y_decode = (pred_y.sigmoid() + y_shift) * self.downsample_rate[i] / self.img_size[1]
+                elif self.label_assignment_method == 'all_grid':
+                    pred_x_box_decode = (pred_x_box.tanh() * grid_w + x_shift) * self.downsample_rate[i] / self.img_size[0]
+                    pred_y_box_decode = (pred_y_box.tanh() * grid_h + y_shift) * self.downsample_rate[i] / self.img_size[1]
+                    pred_x_decode = (pred_x.tanh() * grid_w + x_shift) * self.downsample_rate[i] / self.img_size[0] 
+                    pred_y_decode = (pred_y.tanh() * grid_h + y_shift) * self.downsample_rate[i] / self.img_size[1]
+                elif self.label_assignment_method == 'nearby_grid':
+                    pred_x_box_decode = (pred_x_box.tanh() * 1.5 + 0.5 + x_shift) * self.downsample_rate[i] / self.img_size[0]
+                    pred_y_box_decode = (pred_y_box.tanh() * 1.5 + 0.5 + y_shift) * self.downsample_rate[i] / self.img_size[1]
+                    pred_x_decode = (pred_x.tanh() * 1.5 + 0.5 + x_shift) * self.downsample_rate[i] / self.img_size[0]  
+                    pred_y_decode = (pred_y.tanh() * 1.5 + 0.5 + y_shift) * self.downsample_rate[i] / self.img_size[1]  
+                else:
+                    raise NotImplementedError
+                # reassemble the decoded keypoint x and y coordinates into the same shape as the original predictions for loss calculation
+                kp_decode = torch.stack((pred_x_decode, pred_y_decode), dim=-1).flatten(-2)
+                pred_wh_decode = torch.exp(pred_wh.clamp(min=-10, max=10)) * self.anchor_boxes[i] / self.img_size
+
+                # Use exp to ensure positive width/height values and avoid NaN in IoU loss
+                pred_coord = torch.cat([pred_x_box_decode, pred_y_box_decode, pred_wh_decode], dim=-1)
+                
+                raw_iou_loss = None
+                if pos_mask.sum() > 0:
+                    raw_iou_loss = self.iou_loss_func(pred_coord[pos_mask], assigned_coord[pos_mask], xywh=True)
+                    # Ensure no NaN values in IoU loss
+                    raw_iou_loss = torch.clamp(raw_iou_loss, min=0, max=2)
+                    iou_loss = raw_iou_loss.mean()
+                    
+                    kp_loss = self.lambda_coord * F.mse_loss(kp_decode[pos_mask], assigned_kp[pos_mask], reduction='mean')
+                    kp_loss_value += self.lambda_scales[i] * kp_loss.item()
+                    
+                    if self.assign_conf_method == 'iou':
+                        assigned_conf[pos_mask] = (1 - raw_iou_loss).detach().clamp(min=0., max=1.)
+                    
+
+            # Compute confidence/object loss (binary cross-entropy)
+            #conf_loss = self.bce_loss_func(pred_conf, assigned_conf)
+ 
+            iou_loss_value += self.lambda_scales[i] * iou_loss.item()
+            class_loss_value += self.lambda_scales[i] * class_loss.item()
+        
+        pos_cnt = pos_mask.sum().item()
+        pos_num = 0
+        if pos_cnt > 0 and num_kpts > 0:
+            pos_num = num_kpts / pos_num
+        
+        loss_dict = {
+            #'conf': conf_loss_value,
+            'iou_kp': iou_loss_value,
+            'kp': kp_loss_value,
+            #'class': class_loss_value,
+            'pos_ratio_kp': pos_num
+        }
+        return kp_loss, loss_dict
+
+
+ 
+        # Reshape predictions to (batch_size, num_kpts, 2)
+        predictions = predictions.permute(0, 1, 3, 4, 2).contiguous().view(batch_size, num_kpts, -1)
+
+        # Compute L2 loss between predicted and ground truth keypoints
+        kp_loss = torch.norm(predictions - gt_kps, p=2, dim=-1).mean()
+
+        return kp_loss
+ 
+        kp_loss = self.lambda_coord * F.mse_loss(predictions, gt_kps, reduction='mean')
+        return kp_loss
+
+    def forward_bboxes(self, predictions, bboxes, classes):
         device = predictions[0].device
         batch_size = predictions[0].shape[0]
         num_labels = len(bboxes)
@@ -131,6 +279,7 @@ class YOLOLoss(nn.Module):
                     raise NotImplementedError
 
                 # Use exp to ensure positive width/height values and avoid NaN in IoU loss
+                # TODO: only clamp no exp
                 pred_wh_decode = torch.exp(pred_wh.clamp(min=-10, max=10)) * self.anchor_boxes[i] / self.img_size
                 pred_coord = torch.cat([pred_x_decode, pred_y_decode, pred_wh_decode], dim=-1)
 
@@ -151,6 +300,7 @@ class YOLOLoss(nn.Module):
                     # Compute class loss when there are multiple classes (binary cross-entropy)
                     class_loss = self.bce_loss_func(pred_class[pos_mask], assigned_class[pos_mask])
             else:
+                logging.warning("No Assignments during loss calculation")
                 assigned_conf = torch.zeros_like(pred_conf, device=device)
 
                 iou_loss = torch.tensor(0., device=device, dtype=predicted.dtype)
@@ -179,8 +329,50 @@ class YOLOLoss(nn.Module):
             conf_loss_value += self.lambda_scales[i] * conf_loss.item()
             iou_loss_value += self.lambda_scales[i] * iou_loss.item()
             class_loss_value += self.lambda_scales[i] * class_loss.item()
+        
+        pos_num = (num_labels if num_labels else 0) / pos_mask.sum().item()
+        loss_dict = {
+            'conf': conf_loss_value,
+            'iou': iou_loss_value,
+            'class': class_loss_value,
+            'pos_ratio_stone': pos_num
+        }
+        return total_loss, loss_dict
 
-        return total_loss, (conf_loss_value, iou_loss_value, class_loss_value, (num_labels if num_labels else 0) / pos_mask.sum().item())
+    def label_assignment_kp(self, bboxes, keypoints, classes, batch_size, num_pred_layer):
+        _, cls = classes.unbind(dim=1)
+        cls = cls.long()
+
+        bboxes = torch.cat((bboxes, keypoints[:,1:]), 1)
+
+        assigned_labels = []
+        for i in range(num_pred_layer):
+            targets = torch.zeros((batch_size, self.num_anchor_per_grid, *self.grid_sizes[i], self.num_attrib + self.kp_shape[0] + self.kp_shape[1]), device=bboxes.device) 
+
+            if len(bboxes):
+                if self.label_assignment_method == 'single_grid':
+                    assigned_idx, assigned_bboxes = self.single_grid_assignment(bboxes, cls, self.grid_sizes[i], self.anchor_boxes[i])
+
+                elif self.label_assignment_method == 'all_grid':
+                    assigned_idx, assigned_bboxes = self.all_grid_assignment(bboxes, cls, batch_size, getattr(self, f'anchor_grid_{i}'))
+
+                elif self.label_assignment_method == 'nearby_grid':
+                    assigned_idx, assigned_bboxes = self.nearby_grid_assignment(bboxes, cls, self.grid_sizes[i], self.anchor_boxes[i])
+
+                else:
+                    raise NotImplementedError(f'Unsupported label assignment method: {self.label_assignment_method}\n')
+
+                b_idx, a_idx, h_idx, w_idx, cls_idx = assigned_idx
+                # Set confidence score to 1
+                targets[b_idx, a_idx, h_idx, w_idx, 0] = 1.                     # confidence
+                # Set box coordinates
+                targets[b_idx, a_idx, h_idx, w_idx, 1:] = assigned_bboxes      # bbox
+                ## Set class (one-hot encoding)
+                #targets[b_idx, a_idx, h_idx, w_idx, 5:] = assigned_keypoints             # class
+
+            assigned_labels.append(targets)
+
+        return assigned_labels
 
     def label_assignment(self, bboxes, classes, batch_size, num_pred_layer):
         _, cls = classes.unbind(dim=1)
@@ -304,7 +496,13 @@ class YOLOLoss(nn.Module):
         grid_h, grid_w = grid_size
         device = bboxes.device
 
-        batch_idx, x_center, y_center, width, height = bboxes.unbind(dim=1)
+        if bboxes.shape[1] == 5:
+            batch_idx, x_center, y_center, width, height = bboxes.unbind(dim=1)
+            D = 4
+        else:
+            ub = bboxes.unbind(dim=1)
+            batch_idx, x_center, y_center, width, height = ub[0], ub[1], ub[2], ub[3], ub[4]
+            D = 12
         batch_idx = batch_idx.long()
         N = bboxes.shape[0]
         A = self.num_anchor_per_grid
@@ -330,7 +528,7 @@ class YOLOLoss(nn.Module):
         b_idx = batch_idx[:, None, None].expand(N, A, num_shifts)
         a_idx = torch.arange(A, device=device)[None, :, None].expand(N, A, num_shifts)
         cls_idx = cls[:, None, None].expand(N, A, num_shifts)
-        boxes = bboxes[:, 1:].unsqueeze(1).unsqueeze(2).expand(N, A, num_shifts, 4)
+        boxes = bboxes[:, 1:].unsqueeze(1).unsqueeze(2).expand(N, A, num_shifts, D)
 
         iou = iou.reshape(-1)
         h_idx = h_idx.reshape(-1)
@@ -338,7 +536,7 @@ class YOLOLoss(nn.Module):
         b_idx = b_idx.reshape(-1)
         a_idx = a_idx.reshape(-1)
         cls_idx = cls_idx.reshape(-1)
-        boxes = boxes.reshape(-1, 4)
+        boxes = boxes.reshape(-1, D)
 
         valid_mask = iou >= self.match_iou_thres
         iou = iou[valid_mask]
@@ -404,7 +602,6 @@ class FocalLoss(nn.Module):
             return focal_loss.sum()
         else:
             return focal_loss
-
 
 class IoULoss:
     def __init__(self, iou_loss_type='iou', eps=1e-6):

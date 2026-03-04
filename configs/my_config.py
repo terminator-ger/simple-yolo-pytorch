@@ -1,6 +1,7 @@
 from .base_config import BaseConfig
 import torch as th
-
+import yolo.core.evaluate as E
+from yolo.models.yolo import ModelOutputKeys
 class MyConfig(BaseConfig):
     def __init__(self,):
         super().__init__()
@@ -68,10 +69,21 @@ class MyConfig(BaseConfig):
                             [[24,32], [28,40], [32,48]]
                             ]
     
-        self.load_ckpt_path = 'save/run_0004/best.pth' # 'yolov5_voc_pretrain.pth'
+        self.load_ckpt_path = '/home/michael/data/dev/simple-yolo-pytorch/save/run_0102/last.pth'
 
         self.downsample_rate = [8, 16, 32]
         self.p2 = False
 
 
         self.img_size = [640,640]      # W, H
+        self.evaluators = {
+            ModelOutputKeys.Detections: {
+                    E.EvalTypes.BBox: {"postfix": "Stones",},
+                    E.EvalTypes.Classification: {"postfix": "Stones", "num_class": self.num_class,},
+                    E.EvalTypes.ClassificationLogits: {"postfix": "Stones", "num_class": self.num_class},
+                },
+            ModelOutputKeys.Keypoints: {
+                E.EvalTypes.BBox: {"postfix": "Board",},
+                E.EvalTypes.Keypoint: {"postfix": 'Board',}
+            }
+        }

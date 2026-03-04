@@ -71,43 +71,83 @@ class BaseDataset(Dataset):
         mosaic = random.random() < self.mosaic_p and self.mode == 'train'
 
         # Load one image and its corresponding labels
-        image, bboxes, classes = self.load_data(index, mosaic)
-
+        data = self.load_data(index, mosaic)
+        width, height,_ = data['pixel_values'].shape
+        image=data['pixel_values']
+        bboxes=data['bboxes']
+        class_labels=data['classes']
+        keypoints=data['keypoints']
+        bboxes_kp=data['bboxes_keypoints']
+        classes_kp=data['classes_keypoints']
         # Perform augmentation
         if self.mode == 'train':
-            augmented = self.transform(image=image, bboxes=bboxes, class_labels=classes)
+            augmented = self.transform(image=image,
+                                       bboxes=bboxes,
+                                       class_labels=class_labels,
+                                       keypoints=keypoints,
+                                       bboxes_kp=bboxes_kp,
+                                       classes_kp=classes_kp)
             image = augmented['image']
 
+            bboxes       = np.zeros((0, 4), dtype=np.float32)
+            class_labels = np.zeros((0, 1), dtype=np.float32)
+            keypoints    = np.zeros((0, 8), dtype=np.float32) 
+            bboxes_kp    = np.zeros((0, 4), dtype=np.float32) 
+            classes_kp   = np.zeros((0, 1), dtype=np.float32)
+
             # Update bbox and class after augmentation
-            if len(augmented['bboxes']):
+            if len(augmented['bboxes'])>0:
                 bboxes = np.asarray(augmented['bboxes'])
-                classes = np.asarray(augmented['class_labels'])[:,None]
+                class_labels = np.asarray(augmented['class_labels'])[:,None]
+                bboxes = xyxy_to_xywh(bboxes)
+
+            if len(augmented['keypoints']>0):
+                keypoints = np.asarray(augmented['keypoints']) 
+                bboxes_kp = np.asarray(augmented['bboxes_kp'])
+                classes_kp = np.asarray(augmented['classes_kp'])
 
                 # Transform bbox from xyxy format to xywh format because loss is calculated in xywh space
-                bboxes = xyxy_to_xywh(bboxes)
-            else:
-                bboxes = np.zeros((0, 4), dtype=np.float32)
-                classes = np.zeros((0, 1), dtype=np.float32)
-
+                keypoints = (keypoints / np.array([width, height])).reshape(1,-1)
+                bboxes_kp = xyxy_to_xywh(bboxes_kp)
+        
         elif self.mode == 'val':
             # We do NOT need to transform the bbox to xywh in val mode because torchvision.nms require xyxy format
             img_height, img_width, _ = image.shape
             bboxes[:, 0::2] *= img_width
             bboxes[:, 1::2] *= img_height
+            bboxes_kp[:, 0::2] *= img_width
+            bboxes_kp[:, 1::2] *= img_height
+            keypoints = np.asanyarray(keypoints).reshape(-1,8)
+
 
         # Perform normalization
         image = self.normalize(image=image)['image']
+        bboxes       = np.concatenate((np.zeros((bboxes.shape[0], 1)),       bboxes),      axis=1)
+        class_labels = np.concatenate((np.zeros((class_labels.shape[0], 1)), class_labels),axis=1)
+        keypoints    = np.concatenate((np.zeros((keypoints.shape[0], 1)),    keypoints),   axis=1)
+        bboxes_kp    = np.concatenate((np.zeros((bboxes_kp.shape[0], 1)),    bboxes_kp),   axis=1)
+        classes_kp   = np.concatenate((np.zeros((classes_kp.shape[0], 1)),   classes_kp),  axis=1)
 
-        # Reshape the labels in order to store batch index at the first dimension 
-        bboxes = np.concatenate((np.zeros((bboxes.shape[0], 1)), bboxes), axis=1)
-        classes = np.concatenate((np.zeros((classes.shape[0], 1)), classes), axis=1)
+        return {
+            'pixel_values': image,
+            'bboxes': torch.from_numpy(bboxes).to(torch.float32),
+            'classes': torch.from_numpy(class_labels).to(torch.long),
+            'keypoints': torch.from_numpy(keypoints).to(torch.float32),
+            'bboxes_keypoints': torch.from_numpy(bboxes_kp).to(torch.float32),
+            'classes_keypoints': torch.from_numpy(classes_kp).to(torch.long)
+        }
 
-        return image, torch.from_numpy(bboxes), torch.from_numpy(classes)
+    def _clip(self, augmented):
+        for k in ['bboxes', 'bboxes_kp']:
+            augmented[k] = augmented[k].clip(0,1)
+        return augmented
+
 
     def load_data(self, index, mosaic):
         img_width_full, img_height_full = self.config.img_size
 
         if mosaic:
+            # currently not working
             # Mosaic Training
             image_indices = self.image_indices.copy()
             image_indices.remove(index)
@@ -116,7 +156,13 @@ class BaseDataset(Dataset):
 
             full_img = np.zeros([2*img_height_full, 2*img_width_full, 3])
             for k, idx in enumerate(indices):
-                image_k, bboxes_k, classes_k = self.load_one_img_lbl(idx)
+                data = self.load_one_img_lbl(idx)
+                image_k = data['pixel']
+                bboxes_k = data['bboxes']
+                classes_k = data['classes']
+                kp_k = data['keypoints'] 
+                kp_box = data['keypoints_bbox']
+
                 img_height_k, img_width_k, _ = image_k.shape
 
                 x_k, y_k = (-1) ** (k % 2 + 1), (-1) ** (k // 2 + 1)
@@ -139,28 +185,18 @@ class BaseDataset(Dataset):
 
             bboxes[:, 0::2] /= (2*img_width_full)
             bboxes[:, 1::2] /= (2*img_height_full)
-
+            return {
+                'pixel_values' : full_img.astype(np.uint8),
+                'bboxes': bboxes.astype(np.float32),
+                'classes': classes.astype(np.float32),
+                'keypoints': kp_k if kp_k is not None else None,
+                'bboxes_keypoints': kp_box if kp_k is not None else np.array([0,0,0,0]),
+            }
+        
         else:
         #    # Pad image for fixed size training
-        #    full_img = np.zeros([img_height_full, img_width_full, 3])
-
-            full_img, bboxes, classes = self.load_one_img_lbl(index)
-        #    img_height, img_width, _ = image.shape
-
-        #    x_start = (img_width_full - img_width) // 2
-        #    y_start = (img_height_full - img_height) // 2
-        #    x_end = x_start + img_width
-        #    y_end = y_start + img_height
-
-        #    full_img[y_start:y_end, x_start:x_end] = image
-
-        #    bboxes[:, 0::2] += x_start
-        #    bboxes[:, 1::2] += y_start
-
-        #    bboxes[:, 0::2] /= img_width_full
-        #    bboxes[:, 1::2] /= img_height_full
-
-        return full_img.astype(np.uint8), bboxes.astype(np.float32), classes.astype(np.float32)
+                return  self.load_one_img_lbl(index)
+                
 
     def load_one_img_lbl(self, index):
         image = Image.open(self.images[index]).convert('RGB')
@@ -190,7 +226,12 @@ class BaseDataset(Dataset):
     @staticmethod
     def collate_func(batch):
         '''Function to handle varying number of object within one image'''
-        images, bboxes, classes = zip(*batch)
+        images = [x['pixel_values'] for x in batch]
+        bboxes = [x['bboxes'] for x in batch]
+        classes = [x['classes'] for x in batch]
+        classes_kp = [x['classes_keypoints'] for x in batch]
+        keypoints = [x['keypoints'] for x in batch]
+        bboxes_keypoints = [x['bboxes_keypoints'] for x in batch]
 
         for idx, bbox in enumerate(bboxes):
             bbox[:, 0] = idx
@@ -198,7 +239,24 @@ class BaseDataset(Dataset):
         for idx, cls in enumerate(classes):
             cls[:, 0] = idx
 
-        return torch.stack(images, 0), torch.cat(bboxes, 0), torch.cat(classes, 0)
+        for idx, kp in enumerate(keypoints):
+            kp[:,0] = idx
+        
+        for idx, kp_box in enumerate(bboxes_keypoints):
+            kp_box[:,0] = idx
+
+        for idx, cls_kp in enumerate(classes_kp):
+            cls_kp[:,0] = idx
+
+
+        return {
+            'pixel_values': torch.stack(images, 0),
+            'bboxes': torch.cat(bboxes, 0),
+            'classes': torch.cat(classes, 0),
+            'keypoints': torch.cat(keypoints, 0),
+            'keypoints_bboxes': torch.cat(bboxes_keypoints, 0),
+            'keypoints_classes': torch.cat(classes_kp, 0)
+        }
 
     @classmethod
     def read_xml_ann(cls, file_path, class_map, min_label_area=0, normalize=False):

@@ -1,4 +1,5 @@
 
+from enum import StrEnum, auto
 import os, sys
 #SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 #sys.path.append(os.path.dirname(SCRIPT_DIR))
@@ -180,71 +181,67 @@ class GOSYNImageDataset(th.utils.data.Dataset):
 
     def __getitem__(self, idx):
         img_path = os.path.join(self.img_dir, self.img_labels.iloc[idx]['filename'])
-        #image = decode_image(img_path)
         positions = th.from_numpy(np.stack(self.img_labels.iloc[idx]['labels'])).to(th.int32)
         image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
         image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA)
- 
+
+        #default for no labels given
         bbox = np.zeros((0,4), dtype=np.float32)
-        cls = np.zeros((1), dtype=np.float32)
-        corners = None
+        cls = np.zeros((0,1), dtype=np.float32)
+        corners = np.zeros((0,8), dtype=np.float32)
+        corner_bbox = np.zeros((0,4), dtype=np.float32)
        
         #resize
         old_w, old_h = image.shape[1], image.shape[0]
         image = cv2.resize(image, (self.image_width, self.image_height))        
         
         if self.return_stone_bbox:
-            if self.img_labels.iloc[idx]['bbox'] is None or len(self.img_labels.iloc[idx]['bbox']) ==0:
-                return self.__getitem__(idx+1)  # Skip this sample if bbox is missing or empty
-            bbox = np.stack(self.img_labels.iloc[idx]['bbox']).astype(np.float32)
-            bbox[:, 0::2] = bbox[:, 0::2] / old_w #* self.image_width
-            bbox[:, 1::2] = bbox[:, 1::2] / old_h #* self.image_height
-            # invert bbox y axis direction
-            bbox[:,1], bbox[:,3] = bbox[:,3], bbox[:,1].copy()
-            #bbox[:,1] = 1 - bbox[:,1]
-            #bbox[:,3] = 1 - bbox[:,3]
-            if any(bbox[:,3] <= bbox[:,1]):
-                print(f"Warning: Invalid bbox with y_max > y_min in image {img_path}")
-                bbox = bbox[bbox[:,3] > bbox[:,1]]
+            bbox_data = self.img_labels.iloc[idx]['bbox']
+            cls_data = self.img_labels.iloc[idx]['cls']
+            if bbox_data is not None and bbox_data.shape[0] > 0:
+                # overwrite defaults
+                bbox = np.stack(bbox_data).astype(np.float32)
+                bbox[:, 0::2] = bbox[:, 0::2] / old_w 
+                bbox[:, 1::2] = bbox[:, 1::2] / old_h 
 
-            idx_lt_0 = (bbox[:,3] - bbox[:,1] < 0)
-            if any(idx_lt_0):
-                print(f"Warning: Invalid bbox with y_max < y_min in image {img_path}")
-                bbox = bbox[~idx_lt_0]
+                # invert bbox y axis direction
+                bbox[:,1], bbox[:,3] = bbox[:,3], bbox[:,1].copy()
 
-            
-            cls = np.stack(self.img_labels.iloc[idx]['cls']).astype(np.float32)[:,None]
-            cls -= 1
+                if any(bbox[:,3] <= bbox[:,1]):
+                    print(f"Warning: Invalid bbox with y_max > y_min in image {img_path}")
+                    bbox = bbox[bbox[:,3] > bbox[:,1]]
 
-            # delete bbox and cls for bboxes outside the image after resizing
-            #cond_a = bbox[:,0] < 0
-            #cond_b = bbox[:,0] > self.image_width
-            #cond_c = bbox[:,1] < 0
-            #cond_d = bbox[:,1] > self.image_height
-            #cond = np.logical_or(np.logical_or(np.logical_or(cond_a, cond_b), cond_c), cond_d)
-            #bbox = bbox[~cond]
-            #cls = cls[~cond]
+                idx_lt_0 = (bbox[:,3] - bbox[:,1] < 0)
+                if any(idx_lt_0):
+                    print(f"Warning: Invalid bbox with y_max < y_min in image {img_path}")
+                    bbox = bbox[~idx_lt_0]
+                
+                cls = np.stack(cls_data).astype(np.float32)[:,None]
+                cls -= 1
 
         if self.return_board_corners:
-            corners =np.stack(self.img_labels.iloc[idx]['corners']).astype(np.float32)
-            corners[:, 0] = corners[:, 0] / old_w
-            corners[:, 1] = corners[:, 1] / old_h 
+            corners_data = self.img_labels.iloc[idx]['corners']
+            if corners_data is not None and corners_data.shape[0] > 0:
+                corners = np.stack(corners_data).astype(np.float32)
+                corners = corners[:,:2]
+                corners[:, 0::2] = corners[:, 0::2] / old_w * self.image_width 
+                corners[:, 1::2] = corners[:, 1::2] / old_h * self.image_height 
 
-            cond_a = corners[:,0] < 0 
-            cond_b = corners[:,0] > self.image_width
-            cond_c = corners[:,1] < 0 
-            cond_d = corners[:,1] > self.image_height
-            
-            #_idx = np.argwhere(np.logical_or(np.logical_or(np.logical_or(cond_a, cond_b), cond_c), cond_d))
-            #corners[...,2] = 1.0
-            #corners[_idx,2] = 0.0
-
+                corner_bbox = np.array([np.min(corners[...,0::2]), 
+                                        np.min(corners[...,1::2]),
+                                        np.max(corners[...,0::2]), 
+                                        np.max(corners[...,1::2])]).reshape(-1,4)
+                
+                corner_bbox = corner_bbox / np.array([self.image_width, self.image_height, self.image_width, self.image_height])
+                cls_kp = np.zeros((1,1), dtype=np.float32)
 
         data =  {"pixel_values": image, 
                 "labels": positions, 
-                "bbox": bbox, 
-                "cls": cls, 
-                "corners": corners
+                "bboxes": bbox, 
+                "classes": cls, 
+                "keypoints": corners,
+                "bboxes_keypoints": corner_bbox,
+                "classes_keypoints": cls_kp
         }
 
         data = self.pad_backgound(data)
@@ -261,14 +258,6 @@ class GOSYNImageDataset(th.utils.data.Dataset):
         if self.export:
             img_transformed = data['pixel_values']
             folder = "train" if self.train else "val"
-            #for rect in data['bbox']:
-            #    x_min_norm,y_min_norm,x_max_norm,y_max_norm = rect
-            #    x_min_norm *= self.image_width
-            #    y_min_norm *= self.image_height
-            #    x_max_norm *= self.image_width
-            #    y_max_norm *= self.image_height
-            #    img_transformed = cv2.rectangle(img_transformed, (int(x_min_norm), int(y_min_norm)), (int(x_max_norm), int(y_max_norm)), (255,0,0), 1)
-            
             cv2.imwrite(f'data_pose/images/{folder}/{idx}.png', cv2.cvtColor(img_transformed, cv2.COLOR_RGB2BGR))
             with open(f'data_pose/labels/{folder}/{idx}.txt', 'w') as f:
                 for cls, bbox in zip(data['cls'],data['bbox']):
@@ -279,18 +268,7 @@ class GOSYNImageDataset(th.utils.data.Dataset):
                         f.write(f" {x_center} {y_center}")
                     f.write("\n")
 
-            #with open(f'data_pose/labels/{folder}/{idx}.txt', 'w') as f:
-                kp = data['corners']
-                cls = 2
-                x = kp[:,0].mean()
-                y = kp[:,1].mean()
-                w = kp[:,0].max() - kp[:,0].min()
-                h = kp[:,1].max() - kp[:,1].min()
-                #x,y,vis = kp.tolist()
-                f.write(f"{cls} {x} {y} {w} {h}")
-                for kp_x,kp_y,_ in kp.tolist():
-                    f.write(f" {kp_x} {kp_y}")
-                f.write("\n")
+
            
         return data
        
@@ -298,10 +276,10 @@ if __name__ == "__main__":
     dataset = GOSYNImageDataset(annotations_file="labels.parquet.gz", img_dir="/home/michael/data/dev/pygo_syn_dataset/renders/")
     wh = []
     for d in dataset:
-        if d['bbox'].shape[0] == 0:
+        if d['bboxes'].shape[0] == 0:
             continue
-        w = (d['bbox'][:,2] - d['bbox'][:,0]).mean().item()
-        h = (d['bbox'][:,3] - d['bbox'][:,1]).mean().item()
+        w = (d['bboxes'][:,2] - d['bboxes'][:,0]).mean().item()
+        h = (d['bboxes'][:,3] - d['bboxes'][:,1]).mean().item()
         wh.append([w,h])
     from sklearn.cluster import KMeans
     kmeans = KMeans(n_clusters=12, random_state=0).fit(wh)
@@ -317,7 +295,9 @@ if __name__ == "__main__":
     #dataset = GOSYNImageDataset(annotations_file="labels.parquet.gz", img_dir="/home/michael/data/dev/pygo_syn_dataset/renders/", train=False)
     #[_ for _ in dataset]
 
-
+class GOLabelTypes(StrEnum):
+    Stones = auto()
+    Board = auto()
 
 @register_dataset
 class GOSYN(BaseDataset):
@@ -343,30 +323,33 @@ class GOSYN(BaseDataset):
         # keep config reference
         self.config = config
         self.image_indices = list(range(len(self._internal)))
+        self.label_types = GOLabelTypes
+
         if mode == 'train':
             self.transform = AT.Compose([
-                AT.RandomScale(scale_limit=config.randscale),
+                #AT.RandomScale(scale_limit=config.randscale),
                 AT.Perspective(scale=config.perspective_range, p=config.perspective_p),
                 AT.Rotate(limit=config.rotate_limit, p=config.rotate_p),
                 AT.PadIfNeeded(min_height=config.img_size[1], min_width=config.img_size[0], border_mode=0, value=(0,0,0)),
-                AT.RandomCrop(height=config.img_size[1], width=config.img_size[0]),
+                #AT.RandomCrop(height=config.img_size[1], width=config.img_size[0]),
                 AT.ColorJitter(brightness=config.brightness, contrast=config.contrast, saturation=config.saturation, hue=config.hue),
                 #AT.HorizontalFlip(p=config.h_flip),
                 ], bbox_params=AT.BboxParams(format='albumentations', 
                                              label_fields=['class_labels'], 
                                              filter_invalid_bboxes=True,
-                                             min_visibility=0.5,
+                                             min_visibility=0.25,
                                              clip=True,
-                                             min_area=0.01
-                )
+                                             #min_area=0.01
+                ),
+                keypoint_params=AT.KeypointParams('xy'),
+                additional_targets={"bboxes_kp": "bbox",
+                                    "class_kp": "class_labels"}
+                
             )
 
     def __len__(self):
         return len(self._internal)
 
     def load_one_img_lbl(self, index):
-        data = self._internal.__getitem__(index)
-        image = data['pixel_values']
-        bbox = data['bbox']
-        cls = data['cls']
-        return image, bbox, cls
+        return self._internal.__getitem__(index)
+       
