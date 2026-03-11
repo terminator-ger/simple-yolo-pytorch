@@ -183,15 +183,24 @@ def get_matches_at_iou(width: int,
     pred: tensor of shape [B, N] with N [Prob, X, Y, W, H, CLS_0, CLS_1, ...]
     '''
     pred_boxes = xywh_to_xyxy(pred_boxes)
-    pred_boxes[:, 0::2].clamp_(0, width)
-    pred_boxes[:, 1::2].clamp_(0, height)
+    # remove invalid boxes
+    invalid_idx0 = pred_boxes[:,0] < 0
+    invalid_idx1 = pred_boxes[:,2] > width
+    invalid_idx2 = pred_boxes[:,1] < 0
+    invalid_idx3 = pred_boxes[:,3] > height
+    invalid = invalid_idx0 | invalid_idx1 | invalid_idx2 | invalid_idx3
+    #pred_boxes[:, 0::2].clamp_(0, width)
+    #pred_boxes[:, 1::2].clamp_(0, height)
+    pred_conf = pred_conf[~invalid]
+    pred_classes = pred_classes[~invalid]
+    pred_boxes = pred_boxes[~invalid]
     cls_logits, pred_cls = pred_classes.max(dim=1)
     pred_conf *= cls_logits
     pred = torch.cat([pred_conf.unsqueeze(1), pred_boxes, pred_cls.unsqueeze(1)], dim=1)
     output = pred[pred_conf > conf_t]
 
     # NMS per image
-    kept_indices = _nms(output=output, nms_iou=iou)
+    kept_indices = _nms(output=output, nms_iou=iou, class_agnostic=True if num_class == 1 else False)
 
     if kept_indices is not None:
         output =  dict(boxes=output[kept_indices][:, 1:5], 

@@ -1,7 +1,6 @@
 from torch.utils.data import DataLoader
-
 from .voc import VOC
-from .syn_dataset import GOSYNImageDataset, GOSYN
+from .syn_dataset import GOSYNImageDataset
 from .dataset_registry import dataset_hub
 
 

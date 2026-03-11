@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, '/home/michael/data/dev/simple-yolo-pytorch')
 
 from configs.my_config import MyConfig
-from yolo.core.loss import get_loss_fn
+from yolo.core.loss.yolo_loss import get_loss_fn
 
 def test_loss_extreme_cases():
     config = MyConfig()

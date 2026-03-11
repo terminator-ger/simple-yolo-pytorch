@@ -12,8 +12,8 @@ anchor_offsets = [(-4, -4), (4, -4), (-4, 4), (4, 4), (0, -6),
 
 
 def visualize_assignments(assigned_labels, bboxes, anchor_boxes, images=None, batch_idx=0, img_size=(416, 416),
-                            image_stride=(8, 16, 32), figsizes=(16, 12, 8), save_dir='assigned_results', colormap='tab20',
-                            markersizes=(4, 4, 8), fontsizes=(6, 6, 6), offset_scale=(2, 1, 1)):
+                            image_stride=(4, 8, 16, 32), figsizes=(20, 16, 12, 8), save_dir='assigned_results', colormap='tab20',
+                            markersizes=(4, 4, 4, 8), fontsizes=(6, 6, 6, 6), offset_scale=(2, 2, 1, 1)):
     assert len(assigned_labels) == len(image_stride)
     cmap = plt.get_cmap(colormap)
     color_list = [cmap(i % cmap.N) for i in range(len(bboxes))]

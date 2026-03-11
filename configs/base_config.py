@@ -77,7 +77,7 @@ class BaseConfig:
         self.logger_name = 'yolo_trainer'
 
         # Training setting
-        self.amp_training = False
+        self.amp_training = True
         self.resume_training = True
         self.load_ckpt = True
         self.load_ckpt_path = None#'yolov5_voc_pretrain.pth'

@@ -3,6 +3,8 @@ Create by:  zh320
 Date:       2024/06/15
 """
 
+from typing import List, Optional
+
 import torch
 import torch.nn as nn
 
@@ -17,8 +19,17 @@ class ModelOutputKeys(StrEnum):
     Keypoints = auto()
 
 class YOLO(nn.Module):
-    def __init__(self, num_class=1, backbone_type='resnet18', label_assignment_method='nearby_grid', 
-                    anchor_boxes=None, act_type='relu', channel_sparsity=0.75, p2=False, downsample_rate=None):
+    def __init__(self, 
+                 num_class=1, 
+                 num_class_kp=1,
+                 backbone_type='resnet18', 
+                 label_assignment_method='nearby_grid', 
+                 anchor_boxes=None, 
+                 act_type='relu', 
+                 channel_sparsity=0.75, 
+                 p2=False, 
+                 downsample_rate=None,
+                 heads : List[ModelOutputKeys] = [ModelOutputKeys.Detections, ModelOutputKeys.Keypoints]):
         super().__init__()
         assert label_assignment_method in ['single_grid', 'all_grid', 'nearby_grid']
 
@@ -47,8 +58,12 @@ class YOLO(nn.Module):
 
         self.pan = PAN(last_channel, act_type, p2)
 
-        self.det_head = YOLOHead(last_channel, num_class, label_assignment_method, anchor_boxes, p2, downsample_rate=downsample_rate)
-        self.kp_head = YOLOPoseHEAD(kpt_shape=(4,2), num_class=num_class, ch=last_channel, anchor_boxes=anchor_boxes, label_assignment_method=label_assignment_method)
+        self.heads = torch.nn.ModuleDict()
+        if ModelOutputKeys.Detections in heads:
+            self.heads[ModelOutputKeys.Detections] = YOLOHead(last_channel, num_class, label_assignment_method, anchor_boxes, p2, downsample_rate=downsample_rate)
+
+        if ModelOutputKeys.Keypoints in heads:
+            self.heads[ModelOutputKeys.Keypoints] = YOLOPoseHEAD(kpt_shape=(4,2), num_class=num_class_kp, ch=last_channel, anchor_boxes=anchor_boxes, label_assignment_method=label_assignment_method, p2=p2, downsample_rate=downsample_rate)
 
     def forward(self, x, is_training=True):
         x1, x2, x3, x4 = self.backbone(x)
@@ -56,13 +71,8 @@ class YOLO(nn.Module):
         x4 = self.spp(x4)
 
         res1, res2, res3, res4 = self.pan(x4, x3, x2, x1 if self.p2 else None)
-
-        det = self.det_head([res1, res2, res3, res4], is_training=is_training)
-        kp = self.kp_head([res1, res2, res3, res4], is_training=is_training)
-
-
-        return {ModelOutputKeys.Detections: det, ModelOutputKeys.Keypoints: kp}
-
+        output = {k: head([res1, res2, res3, res4], is_training=is_training) for k, head in self.heads.items()}
+        return output
 
 
 class YOLOHead(nn.Module):
@@ -81,7 +91,7 @@ class YOLOHead(nn.Module):
         out_channel = self.num_anchor * self.num_attrib
         self.downsample_rate = downsample_rate
 
-        N = 4 if p2 else 3
+        N = 4 if self.p2 else 3
         self.heads = nn.ModuleList([conv1x1(in_channel//2**((N-1)-i), out_channel) for i in range(N)])
 
     def forward(self, feats, is_training=True):
@@ -133,7 +143,15 @@ class YOLOPoseHEAD(nn.Module):
         >>> outputs = pose(x)
     """
 
-    def __init__(self, num_class: int = 80, kpt_shape: tuple = (4, 4), reg_max=16, ch=32, anchor_boxes=None, label_assignment_method=None):
+    def __init__(self, 
+                 num_class: int = 1, 
+                 kpt_shape: tuple = (4, 4), 
+                 reg_max: int = 16, 
+                 ch : int = 32, 
+                 anchor_boxes: Optional[List] = None, 
+                 label_assignment_method=None, 
+                 p2: bool = False,
+                 downsample_rate: List[int] = [8, 16, 32]):
         """Initialize YOLO network with default parameters and Convolutional Layers.
 
         Args:
@@ -144,6 +162,7 @@ class YOLOPoseHEAD(nn.Module):
             ch (tuple): Tuple of channel sizes from backbone feature maps.
         """
         super().__init__()
+        self.p2 = p2
         self.label_assignment_method = label_assignment_method
         assert anchor_boxes is not None, 'Anchor boxes must be given.\n'
         self.anchor_boxes = torch.tensor(anchor_boxes)
@@ -159,11 +178,12 @@ class YOLOPoseHEAD(nn.Module):
         self.max_det = 12
         self.reg_max = reg_max  # DFL channels (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
         self.no = num_class + self.reg_max * 4 
-        self.num_attrib = self.nk + 5 
+        self.num_attrib = self.nk + 6 
         c4 = max(ch // 4, self.num_attrib)
         out_channel = self.num_attrib * self.num_anchor
-        self.heads = nn.ModuleList(nn.Sequential(ConvBNAct(ch//2**(2-i), c4, 3), ConvBNAct(c4, c4, 3), nn.Conv2d(c4, out_channel, 1)) for i in range(3))
-        self.downsample_rate = torch.tensor([8, 16, 32])
+        N = 4 if self.p2 else 3
+        self.heads = nn.ModuleList(nn.Sequential(ConvBNAct(ch//2**((N-1)-i), c4, 3), ConvBNAct(c4, c4, 3), nn.Conv2d(c4, out_channel, 1)) for i in range(N))
+        self.downsample_rate = torch.tensor(downsample_rate)
 
     def forward(
         self, 
@@ -175,7 +195,6 @@ class YOLOPoseHEAD(nn.Module):
             feats = feats[1:]
  
         device = feats[0].device
-        bs = feats[0].shape[0]  # batch size
         self.downsample_rate.to(device)
         out = []
         for i, head in enumerate(self.heads):
@@ -189,7 +208,9 @@ class YOLOPoseHEAD(nn.Module):
                 out.append(feat)
             else:
                 feat = decode_boxes(feat, self.anchor_boxes[i], self.label_assignment_method, self.downsample_rate[i])
-                feat = decode_kpts(feat, self.anchor_boxes[i], self.label_assignment_method, self.downsample_rate[i])
+                feat = decode_kpts(feat, self.anchor_boxes[i], self.label_assignment_method, self.downsample_rate[i], offset=5+self.num_class)
+                # Decode class logits using sigmoid
+                feat[..., 5:5+self.num_class] = feat[..., 5:5+self.num_class].sigmoid()
                 out.append(feat.reshape(batch_size, -1, self.num_attrib))
         
         out = out if is_training else torch.cat(out, dim=1)
@@ -238,8 +259,8 @@ def decode_boxes(feat, anchor_boxes, label_assignment_method, downsample_rate, )
 
     return feat
 
-def decode_kpts(feat, anchor_boxes, label_assignment_method, downsample_rate):
-    num_kpts = (feat.shape[-1] - 5) // 2
+def decode_kpts(feat, anchor_boxes, label_assignment_method, downsample_rate, offset=5):
+    num_kpts = (feat.shape[-1] - offset) // 2
     batch_size, _, grid_h, grid_w,_ = feat.size()
     device = feat.device
     num_anchor = anchor_boxes.shape[0]
@@ -250,14 +271,14 @@ def decode_kpts(feat, anchor_boxes, label_assignment_method, downsample_rate):
 
     # Decode box center coords by adding position shifts
     if label_assignment_method == 'single_grid':
-        feat[..., 5::2] = (feat[..., 5::2].sigmoid() + x_shift) * downsample_rate
-        feat[..., 6::2] = (feat[..., 6::2].sigmoid() + y_shift) * downsample_rate
+        feat[..., offset::2] = (feat[..., offset::2].sigmoid() + x_shift) * downsample_rate
+        feat[..., offset+1::2] = (feat[..., offset+1::2].sigmoid() + y_shift) * downsample_rate
     elif label_assignment_method == 'all_grid':
-        feat[..., 5::2] = (feat[..., 5::2].tanh() * grid_w + x_shift) * downsample_rate
-        feat[..., 6::2] = (feat[..., 6::2].tanh() * grid_h + y_shift) * downsample_rate
+        feat[..., offset::2] = (feat[..., offset::2].tanh() * grid_w + x_shift) * downsample_rate
+        feat[..., offset+1::2] = (feat[..., offset+1::2].tanh() * grid_h + y_shift) * downsample_rate
     elif label_assignment_method == 'nearby_grid':
-        feat[..., 5::2] = (feat[..., 5::2].tanh() * 1.5 + 0.5 + x_shift) * downsample_rate
-        feat[..., 6::2] = (feat[..., 6::2].tanh() * 1.5 + 0.5 + y_shift) * downsample_rate
+        feat[..., offset::2] = (feat[..., offset::2].tanh() * 1.5 + 0.5 + x_shift) * downsample_rate
+        feat[..., offset+1::2] = (feat[..., offset+1::2].tanh() * 1.5 + 0.5 + y_shift) * downsample_rate
     else:
         raise NotImplementedError
 

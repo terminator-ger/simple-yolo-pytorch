@@ -70,7 +70,7 @@ def interpolateSmoothly(xs, N):
 
 
 class GOSYNImageDataset(th.utils.data.Dataset):
-    def __init__(self, annotations_file, img_dir, train=True, return_stone_bbox=True, return_board_corners=True):
+    def __init__(self, annotations_file, img_dir, train=True, return_stone_bbox=True, return_board_corners=False):
         self.img_labels = pd.read_parquet(os.path.join(img_dir, annotations_file))
         if train:
             # reserve 80% for training
@@ -180,6 +180,8 @@ class GOSYNImageDataset(th.utils.data.Dataset):
         return len(self.img_labels)
 
     def __getitem__(self, idx):
+        data = {}
+
         img_path = os.path.join(self.img_dir, self.img_labels.iloc[idx]['filename'])
         positions = th.from_numpy(np.stack(self.img_labels.iloc[idx]['labels'])).to(th.int32)
         image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
@@ -194,10 +196,16 @@ class GOSYNImageDataset(th.utils.data.Dataset):
         #resize
         old_w, old_h = image.shape[1], image.shape[0]
         image = cv2.resize(image, (self.image_width, self.image_height))        
-        
+        data['pixel_values'] = image
+
+
         if self.return_stone_bbox:
             bbox_data = self.img_labels.iloc[idx]['bbox']
             cls_data = self.img_labels.iloc[idx]['cls']
+            data["labels"] = np.zeros(dtype=np.int32, shape=(0,4))
+            data["bboxes"] = np.zeros(dtype=np.float32, shape=(0,4))
+            data["classes"] = np.zeros(dtype=np.int32, shape=(0,1))
+
             if bbox_data is not None and bbox_data.shape[0] > 0:
                 # overwrite defaults
                 bbox = np.stack(bbox_data).astype(np.float32)
@@ -218,6 +226,9 @@ class GOSYNImageDataset(th.utils.data.Dataset):
                 
                 cls = np.stack(cls_data).astype(np.float32)[:,None]
                 cls -= 1
+                data["labels"] = positions
+                data["bboxes"] = bbox
+                data["classes"] = cls
 
         if self.return_board_corners:
             corners_data = self.img_labels.iloc[idx]['corners']
@@ -234,16 +245,10 @@ class GOSYNImageDataset(th.utils.data.Dataset):
                 
                 corner_bbox = corner_bbox / np.array([self.image_width, self.image_height, self.image_width, self.image_height])
                 cls_kp = np.zeros((1,1), dtype=np.float32)
-
-        data =  {"pixel_values": image, 
-                "labels": positions, 
-                "bboxes": bbox, 
-                "classes": cls, 
-                "keypoints": corners,
-                "bboxes_keypoints": corner_bbox,
-                "classes_keypoints": cls_kp
-        }
-
+                data["keypoints"] = corners
+                data["bboxes_keypoints"] = corner_bbox
+                data["classes_keypoints"] = cls_kp
+ 
         data = self.pad_backgound(data)
         
         if False:
@@ -317,8 +322,9 @@ class GOSYN(BaseDataset):
         self._internal = GOSYNImageDataset(annotations_file=annotations_file,
                                           img_dir=img_dir,
                                           train=train,
-                                          return_stone_bbox=True,
-                                          return_board_corners=True)
+                                          return_stone_bbox=config.return_stone_bbox,
+                                          return_board_corners=config.return_board_corners, 
+                                          )
 
         # keep config reference
         self.config = config

@@ -3,7 +3,7 @@ import glob
 import torch
 from torch.cuda import amp
 from copy import deepcopy
-from .loss import get_loss_fn
+from .loss.yolo_loss import get_loss_fn
 from yolo.models import get_model
 from yolo.datasets import get_loader, get_test_loader
 from yolo.utils import (get_optimizer, get_scheduler, parallel_model, de_parallel, 
