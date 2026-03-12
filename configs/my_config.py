@@ -40,6 +40,8 @@ class MyConfig(BaseConfig):
         self.lambda_obj = 1.0
         self.lambda_noobj = 0.5
         self.lambda_kp = 1.0
+        self.lambda_loss_det = 0.5
+        self.lambda_loss_kp = 0.5
         self.lambda_scales = [1.0, 1.0, 1.0, 1.0]
         self.use_noobj_loss = False
         self.iou_loss_type = 'ciou'

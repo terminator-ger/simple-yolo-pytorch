@@ -20,6 +20,7 @@ class LossMap(torch.nn.Module):
 
     def __init__(self, config: Dict):
         super().__init__()
+        self.config = config
         self._map = torch.nn.ModuleDict()
         for model_output, loss_name in config.loss.items():
             loss_cls = LossRegistry()[loss_name]
@@ -38,13 +39,13 @@ class LossMap(torch.nn.Module):
         if "bboxes" in targets and ModelOutputKeys.Detections in predictions:
             bbox_loss, bbox_loss_dict = self._map[ModelOutputKeys.Detections](predictions=predictions[ModelOutputKeys.Detections], 
                                                             targets=targets)
-            total_loss += self.lambda_obj * bbox_loss
+            total_loss += self.config.lambda_loss_det * bbox_loss
             loss_dict.update(bbox_loss_dict)
 
         if "keypoints" in targets and ModelOutputKeys.Keypoints in predictions:
             kp_loss, kp_loss_dict = self._map[ModelOutputKeys.Keypoints](predictions=predictions[ModelOutputKeys.Keypoints], 
                                                            targets=targets)
-            total_loss += self.lambda_kp * kp_loss
+            total_loss += self.config.lambda_loss_kp * kp_loss
             loss_dict.update(kp_loss_dict)
         
         return total_loss, loss_dict
@@ -111,43 +112,6 @@ class YOLOLoss(nn.Module):
         return anchor_grid
 
  
-    '''
-    def label_assignment_kp(self, bboxes, keypoints, classes, batch_size, num_pred_layer):
-        _, cls = classes.unbind(dim=1)
-        cls = cls.long()
-
-        bboxes = torch.cat((bboxes, keypoints[:,1:]), 1)
-
-        assigned_labels = []
-        for i in range(num_pred_layer):
-            targets = torch.zeros((batch_size, self.num_anchor_per_grid, *self.grid_sizes[i], self.num_attrib + self.kp_shape[0] + self.kp_shape[1]), device=bboxes.device) 
-
-            if len(bboxes):
-                if self.label_assignment_method == 'single_grid':
-                    assigned_idx, assigned_bboxes = self.single_grid_assignment(bboxes, cls, self.grid_sizes[i], self.anchor_boxes[i])
-
-                elif self.label_assignment_method == 'all_grid':
-                    assigned_idx, assigned_bboxes = self.all_grid_assignment(bboxes, cls, batch_size, getattr(self, f'anchor_grid_{i}'))
-
-                elif self.label_assignment_method == 'nearby_grid':
-                    assigned_idx, assigned_bboxes = self.nearby_grid_assignment(bboxes, cls, self.grid_sizes[i], self.anchor_boxes[i])
-
-                else:
-                    raise NotImplementedError(f'Unsupported label assignment method: {self.label_assignment_method}\n')
-
-                b_idx, a_idx, h_idx, w_idx, cls_idx = assigned_idx
-                # Set confidence score to 1
-                targets[b_idx, a_idx, h_idx, w_idx, 0] = 1.                     # confidence
-                # Set box coordinates
-                targets[b_idx, a_idx, h_idx, w_idx, 1:] = assigned_bboxes      # bbox
-                ## Set class (one-hot encoding)
-                #targets[b_idx, a_idx, h_idx, w_idx, 5:] = assigned_keypoints             # class
-
-            assigned_labels.append(targets)
-
-        return assigned_labels
-
-    '''
     def label_assignment(self, bboxes, classes, batch_size, num_pred_layer):
         _, cls = classes.unbind(dim=1)
         cls = cls.long()

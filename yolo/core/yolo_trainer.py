@@ -168,8 +168,9 @@ class YOLOTrainer(BaseTrainer):
                         }]}
                     
                     if k == ModelOutputKeys.Keypoints:
+                        kp_offset = 5 + self.config.num_class_kp
                         max_idx = pred_conf[select_idx].argmax()
-                        kp_matched = p[select_idx][max_idx, 5:].reshape(-1,8)
+                        kp_matched = p[select_idx][max_idx, kp_offset:].reshape(-1,8)
                         kp_label_pred = torch.zeros((1), device=self.device, dtype=torch.int32)
                         kp_target = _select_by_index(data['keypoints'], batch_idx).reshape(-1,8).to(self.device)
                         kp_box_target = _select_by_index(data['keypoints_bboxes'], batch_idx).to(self.device)

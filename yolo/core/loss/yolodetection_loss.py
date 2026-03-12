@@ -25,6 +25,10 @@ class YOLODetectionLoss(YOLOLoss):
             predicted = predictions[i]
             pred_conf = predicted[..., 0]
 
+            assigned_conf = torch.zeros_like(pred_conf, device=device)
+            iou_loss = torch.tensor(0., device=device, dtype=predicted.dtype)
+            class_loss = torch.tensor(0., device=device, dtype=predicted.dtype)
+            
             if num_labels:
                 # Extract predicted box coordinates and class probabilities
                 pred_x = predicted[..., 1:2]
@@ -63,11 +67,10 @@ class YOLODetectionLoss(YOLOLoss):
 
                 # Use exp to ensure positive width/height values and avoid NaN in IoU loss
                 # TODO: only clamp no exp
-                pred_wh_decode = torch.exp(pred_wh.clamp(min=-10, max=10)) * self.anchor_boxes[i] / self.img_size
+                #pred_wh_decode = torch.exp(pred_wh.clamp(min=-10, max=10)) * self.anchor_boxes[i] / self.img_size
+                pred_wh_decode = pred_wh * 4 * self.anchor_boxes[i] / self.img_size
                 pred_coord = torch.cat([pred_x_decode, pred_y_decode, pred_wh_decode], dim=-1)
 
-                class_loss = torch.tensor(0., device=device, dtype=predicted.dtype)
-                iou_loss = torch.tensor(0., device=device, dtype=predicted.dtype)
                 raw_iou_loss = None
                 
                 if pos_mask.sum() > 0:
@@ -79,16 +82,10 @@ class YOLODetectionLoss(YOLOLoss):
                     if self.assign_conf_method == 'iou':
                         assigned_conf[pos_mask] = (1 - raw_iou_loss).detach().clamp(min=0., max=1.)
 
-                if self.num_class > 1 and pos_mask.sum() > 0:
-                    # Compute class loss when there are multiple classes (binary cross-entropy)
-                    class_loss = self.bce_loss_func(pred_class[pos_mask], assigned_class[pos_mask])
-            else:
-                logging.warning("No Assignments during loss calculation")
-                assigned_conf = torch.zeros_like(pred_conf, device=device)
-
-                iou_loss = torch.tensor(0., device=device, dtype=predicted.dtype)
-                class_loss = torch.tensor(0., device=device, dtype=predicted.dtype)
-
+                    if self.num_class > 1:
+                        # Compute class loss when there are multiple classes (binary cross-entropy)
+                        class_loss = self.bce_loss_func(pred_class[pos_mask], assigned_class[pos_mask])
+            
             # Compute confidence/object loss (binary cross-entropy)
             conf_loss = self.bce_loss_func(pred_conf, assigned_conf)
             
@@ -98,7 +95,9 @@ class YOLODetectionLoss(YOLOLoss):
             class_loss = torch.clamp(class_loss, min=0, max=1e4)
 
             # Loss for one detection layer
-            loss_per_layer = self.lambda_obj * conf_loss + self.lambda_coord * iou_loss + class_loss
+            loss_per_layer = (self.lambda_obj * conf_loss + 
+                              self.lambda_coord * iou_loss + 
+                              class_loss)
 
             if self.use_noobj_loss:
                 loss_per_layer += self.lambda_noobj * (1 - assigned_conf) * conf_loss
