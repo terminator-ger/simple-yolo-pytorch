@@ -7,7 +7,7 @@ class MyConfig(BaseConfig):
     def __init__(self,):
         super().__init__()
         # Task
-        self.task = 'train' # train, val, predict, debug
+        self.task = 'predict' # train, val, predict, debug
 
         # VOC
         self.dataset = 'gosyn'
@@ -36,8 +36,8 @@ class MyConfig(BaseConfig):
         self.num_debug_batch = 1
 
         # Loss
-        self.lambda_coord = 0.1
-        self.lambda_obj = 1.0
+        self.lambda_coord = 1.0
+        self.lambda_obj = 10.0
         self.lambda_noobj = 0.5
         self.lambda_kp = 1.0
         self.lambda_loss_det = 0.5
@@ -77,7 +77,7 @@ class MyConfig(BaseConfig):
                             [[43,61], [59,81], [61,85], [512, 368]]
                             ]
     
-        self.load_ckpt_path = None #'/home/michael/data/dev/simple-yolo-pytorch/save/run_0025/last.pth'
+        self.load_ckpt_path = '/home/michael/data/dev/simple-yolo-pytorch/save/run_0106/last.pth'
 
         self.downsample_rate = [4, 8, 16, 32]
         self.p2 = True

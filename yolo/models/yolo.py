@@ -178,12 +178,16 @@ class YOLOPoseHEAD(nn.Module):
         self.max_det = 12
         self.reg_max = reg_max  # DFL channels (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
         self.no = num_class + self.reg_max * 4 
-        self.num_attrib = self.nk + 6 
+        self.num_attrib = self.nk + 5 + self.num_class 
         c4 = max(ch // 4, self.num_attrib)
         out_channel = self.num_attrib * self.num_anchor
         N = 4 if self.p2 else 3
         self.heads = nn.ModuleList(nn.Sequential(ConvBNAct(ch//2**((N-1)-i), c4, 3), ConvBNAct(c4, c4, 3), nn.Conv2d(c4, out_channel, 1)) for i in range(N))
         self.downsample_rate = torch.tensor(downsample_rate)
+        self.offset = self.num_class + 5
+        #for i in range(len(self.heads)):
+        #    nn.init.normal_(self.heads[i][-1].weight, std=0.05)
+        #    nn.init.constant_(self.heads[i][-1].bias, 0)
 
     def forward(
         self, 
@@ -207,10 +211,10 @@ class YOLOPoseHEAD(nn.Module):
             if is_training:
                 out.append(feat)
             else:
-                feat = decode_boxes(feat, self.anchor_boxes[i], self.label_assignment_method, self.downsample_rate[i])
-                feat = decode_kpts(feat, self.anchor_boxes[i], self.label_assignment_method, self.downsample_rate[i], offset=5+self.num_class)
+                feat[...,:5] = decode_boxes(feat[...,:5], self.anchor_boxes[i], self.label_assignment_method, self.downsample_rate[i])
+                feat[...,self.offset:] = decode_kpts(feat[...,self.offset:], self.anchor_boxes[i], self.label_assignment_method, self.downsample_rate[i], offset=5+self.num_class)
                 # Decode class logits using sigmoid
-                feat[..., 5:5+self.num_class] = feat[..., 5:5+self.num_class].sigmoid()
+                feat[..., 5:self.offset] = feat[..., 5:self.offset].sigmoid()
                 out.append(feat.reshape(batch_size, -1, self.num_attrib))
         
         out = out if is_training else torch.cat(out, dim=1)
@@ -218,10 +222,10 @@ class YOLOPoseHEAD(nn.Module):
         return out
     
 
-def decode_boxes(feat, anchor_boxes, label_assignment_method, downsample_rate, ):
+def decode_boxes(boxes, anchor_boxes, label_assignment_method, downsample_rate):
 
-    batch_size, _, grid_h, grid_w,_ = feat.size()
-    device = feat.device
+    batch_size, _, grid_h, grid_w,_ = boxes.size()
+    device = boxes.device
     num_anchor = anchor_boxes.shape[0]
     # When not training, we need to decode the output using position shifts and predefined anchor boxes.
     # The output in the last dimension will be [conf, dx, dy, width, height, class1, class2, ...]
@@ -232,37 +236,31 @@ def decode_boxes(feat, anchor_boxes, label_assignment_method, downsample_rate, )
                     .repeat(1, 1, grid_h, grid_w, 1).to(device, dtype=torch.float32)
 
     # Decode box confidence using sigmoid
-    feat[..., 0] = feat[..., 0].sigmoid()
+    boxes[..., 0] = boxes[..., 0].sigmoid()
 
     # Decode box center coords by adding position shifts
     if label_assignment_method == 'single_grid':
-        feat[..., 1] = (feat[..., 1].sigmoid() + x_shift) * downsample_rate
-        feat[..., 2] = (feat[..., 2].sigmoid() + y_shift) * downsample_rate
-        #feat[..., 5::2] = (feat[..., 5::2].sigmoid() + x_shift) * downsample_rate
-        #feat[..., 6::2] = (feat[..., 6::2].sigmoid() + y_shift) * downsample_rate
+        boxes[..., 1] = (boxes[..., 1].sigmoid() + x_shift) * downsample_rate
+        boxes[..., 2] = (boxes[..., 2].sigmoid() + y_shift) * downsample_rate
     elif label_assignment_method == 'all_grid':
-        feat[..., 1] = (feat[..., 1].tanh() * grid_w + x_shift) * downsample_rate
-        feat[..., 2] = (feat[..., 2].tanh() * grid_h + y_shift) * downsample_rate
-        #feat[..., 5::2] = (feat[..., 5::2].tanh() * grid_w + x_shift) * downsample_rate
-        #feat[..., 6::2] = (feat[..., 6::2].tanh() * grid_h + y_shift) * downsample_rate
+        boxes[..., 1] = (boxes[..., 1].tanh() * grid_w + x_shift) * downsample_rate
+        boxes[..., 2] = (boxes[..., 2].tanh() * grid_h + y_shift) * downsample_rate
     elif label_assignment_method == 'nearby_grid':
-        feat[..., 1] = (feat[..., 1].tanh() * 1.5 + 0.5 + x_shift) * downsample_rate
-        feat[..., 2] = (feat[..., 2].tanh() * 1.5 + 0.5 + y_shift) * downsample_rate
-        #feat[..., 5::2] = (feat[..., 5::2].tanh() * 1.5 + 0.5 + x_shift) * downsample_rate
-        #feat[..., 6::2] = (feat[..., 6::2].tanh() * 1.5 + 0.5 + y_shift) * downsample_rate
+        boxes[..., 1] = (boxes[..., 1].tanh() * 1.5 + 0.5 + x_shift) * downsample_rate
+        boxes[..., 2] = (boxes[..., 2].tanh() * 1.5 + 0.5 + y_shift) * downsample_rate
     else:
         raise NotImplementedError
 
-    feat[...,3:5] = feat[...,3:5].clip(min=0)
     # Decode box width and height by multiplying predefined anchor boxes
-    feat[..., 3:5] = feat[..., 3:5] * 4 * base_anchors
+    boxes[...,3:5] = boxes[...,3:5].clip(min=0)
+    boxes[..., 3:5] = ((boxes[..., 3:5].sigmoid() *2) **2) * base_anchors
 
-    return feat
+    return boxes
 
-def decode_kpts(feat, anchor_boxes, label_assignment_method, downsample_rate, offset=5):
-    num_kpts = (feat.shape[-1] - offset) // 2
-    batch_size, _, grid_h, grid_w,_ = feat.size()
-    device = feat.device
+def decode_kpts(kpts, boxes, anchor_boxes, label_assignment_method, downsample_rate):
+    num_kpts = (kpts.shape[-1]) // 2
+    batch_size, _, grid_h, grid_w,_ = kpts.size()
+    device = kpts.device
     num_anchor = anchor_boxes.shape[0]
     # When not training, we need to decode the output using position shifts and predefined anchor boxes.
     # The output in the last dimension will be [conf, dx, dy, width, height, class1, class2, ...]
@@ -271,15 +269,19 @@ def decode_kpts(feat, anchor_boxes, label_assignment_method, downsample_rate, of
 
     # Decode box center coords by adding position shifts
     if label_assignment_method == 'single_grid':
-        feat[..., offset::2] = (feat[..., offset::2].sigmoid() + x_shift) * downsample_rate
-        feat[..., offset+1::2] = (feat[..., offset+1::2].sigmoid() + y_shift) * downsample_rate
+        kpts[..., 0::2] = (kpts[..., 0::2].sigmoid() + x_shift) * downsample_rate
+        kpts[..., 1::2] = (kpts[..., 1::2].sigmoid() + y_shift) * downsample_rate
     elif label_assignment_method == 'all_grid':
-        feat[..., offset::2] = (feat[..., offset::2].tanh() * grid_w + x_shift) * downsample_rate
-        feat[..., offset+1::2] = (feat[..., offset+1::2].tanh() * grid_h + y_shift) * downsample_rate
+        kpts[..., 0::2] = (kpts[..., 0::2].tanh() * grid_w + x_shift) * downsample_rate
+        kpts[..., 1::2] = (kpts[..., 1::2].tanh() * grid_h + y_shift) * downsample_rate
     elif label_assignment_method == 'nearby_grid':
-        feat[..., offset::2] = (feat[..., offset::2].tanh() * 1.5 + 0.5 + x_shift) * downsample_rate
-        feat[..., offset+1::2] = (feat[..., offset+1::2].tanh() * 1.5 + 0.5 + y_shift) * downsample_rate
+        pred_x_box = boxes[...,1:2]
+        pred_y_box = boxes[...,2:3]
+        pred_w_box = boxes[...,3:4]
+        pred_h_box = boxes[...,4:5]
+        kpts[..., 0::2]   = pred_x_box + (kpts[..., 0::2].tanh()   * pred_w_box) 
+        kpts[..., 1::2] = pred_y_box + (kpts[..., 1::2].tanh() * pred_h_box) 
     else:
         raise NotImplementedError
 
-    return feat
+    return kpts

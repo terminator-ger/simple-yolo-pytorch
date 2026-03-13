@@ -46,7 +46,6 @@ class YOLOTrainer(BaseTrainer):
                 if len(v.shape) == 1:
                     for idx in range(len(v)):
                         self.writer.add_scalar(f"{prefix}/{k}_{idx}", v[idx], counter)
-
     def train_one_epoch(self, config):
         self.model.train()
 

@@ -288,9 +288,13 @@ def evaluate( output, target, raw_pred, num_class):
                 matched_probs.append(probs)
 
     # Update metric state
+    if len(matched_probs) > 0:
+        matched_probs = torch.stack(matched_probs).to(raw_pred.device)
+    else:
+        matched_probs = torch.tensor([])
+
     matched_preds = torch.tensor(matched_preds).to(raw_pred.device)
     matched_targets = torch.tensor(matched_targets).to(raw_pred.device)
-    matched_probs = torch.stack(matched_probs).to(raw_pred.device)
 
 
     return matched_probs, matched_targets, matched_preds

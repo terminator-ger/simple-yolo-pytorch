@@ -6,6 +6,7 @@ import logging
 import torch.nn.functional as F
 from typing import Dict, Tuple
 from yolo.core.loss.registry import LossRegistry
+from yolo.models.yolo import decode_boxes, decode_kpts
 loss_registry = LossRegistry()
 
 @loss_registry.register
@@ -42,7 +43,6 @@ class YOLOKeypointLoss(YOLOLoss):
             assigned_labels = self.label_assignment(gt_kp_boxes, gt_kps, classes, batch_size, num_pred_layer)
             assert len(predictions) == len(assigned_labels)
 
-
         total_loss, conf_loss_value, iou_loss_value, class_loss_value, kp_loss_value = 0., 0., 0., 0., 0.
         for i in range(num_pred_layer):
             # Extract predicted confidence scores
@@ -55,9 +55,9 @@ class YOLOKeypointLoss(YOLOLoss):
                 pred_x_box = predicted[..., 1][...,None]
                 pred_y_box = predicted[..., 2][...,None]
                 pred_wh = predicted[..., 3:5]
-                #pred_x = predicted[...,self.kp_offset::2]
-                #pred_y = predicted[...,self.kp_offset+1::2]
-                pred_kp = predicted[...,self.kp_offset:]
+                pred_x = predicted[...,self.kp_offset::2]
+                pred_y = predicted[...,self.kp_offset+1::2]
+                #pred_kp = predicted[...,self.kp_offset:]
                 pred_class = predicted[..., 5:self.kp_offset]
 
                 # Calculate x_shift and y_shift to decode predicted box coordinates
@@ -75,32 +75,28 @@ class YOLOKeypointLoss(YOLOLoss):
                 # Only consider positive examples for iou loss and class loss
                 pos_mask = assigned_conf > 0
 
+                pred_wh_decode = (pred_wh.sigmoid() * 2) **2 * self.anchor_boxes[i] / self.img_size
+                gt_w = assigned_coord[..., 2:3].clone().detach()  # fixed GT, not predicted
+                gt_h = assigned_coord[..., 3:4].clone().detach()
+
                 # Compute IoU loss for normalized bounding box coordinates (need to avoid in-place operation)
                 if self.label_assignment_method == 'single_grid':
                     pred_x_box_decode = (pred_x_box.sigmoid() + x_shift) * self.downsample_rate[i] / self.img_size[0]
                     pred_y_box_decode = (pred_y_box.sigmoid() + y_shift) * self.downsample_rate[i] / self.img_size[1]
-                    #pred_x_decode = (pred_x.sigmoid() + x_shift) * self.downsample_rate[i] / self.img_size[0]
-                    #pred_y_decode = (pred_y.sigmoid() + y_shift) * self.downsample_rate[i] / self.img_size[1]
                 elif self.label_assignment_method == 'all_grid':
                     pred_x_box_decode = (pred_x_box.tanh() * grid_w + x_shift) * self.downsample_rate[i] / self.img_size[0]
                     pred_y_box_decode = (pred_y_box.tanh() * grid_h + y_shift) * self.downsample_rate[i] / self.img_size[1]
-                    #pred_x_decode = (pred_x.tanh() * grid_w + x_shift) * self.downsample_rate[i] / self.img_size[0] 
-                    #pred_y_decode = (pred_y.tanh() * grid_h + y_shift) * self.downsample_rate[i] / self.img_size[1]
                 elif self.label_assignment_method == 'nearby_grid':
                     pred_x_box_decode = (pred_x_box.tanh() * 1.5 + 0.5 + x_shift) * self.downsample_rate[i] / self.img_size[0]
                     pred_y_box_decode = (pred_y_box.tanh() * 1.5 + 0.5 + y_shift) * self.downsample_rate[i] / self.img_size[1]
-                    #pred_x_decode = (pred_x.tanh() * 1.5 + 0.5 + x_shift) * self.downsample_rate[i] / self.img_size[0]  
-                    #pred_y_decode = (pred_y.tanh() * 1.5 + 0.5 + y_shift) * self.downsample_rate[i] / self.img_size[1]  
+                    pred_kp_x_decode = pred_x_box_decode.detach() + (pred_x.tanh() * gt_w) 
+                    pred_kp_y_decode = pred_y_box_decode.detach() + (pred_y.tanh() * gt_h)
+
                 else:
                     raise NotImplementedError
                 # reassemble the decoded keypoint x and y coordinates into the same shape as the original predictions for loss calculation
-                #kp_decode = torch.stack((pred_x_decode, pred_y_decode), dim=-1).flatten(-2)
-                #pred_x_decode = pred_kp * 4 * self.anchor_boxes[i] / self.img_size
-                #kp_decode = torch.stack((pred_x_decode, pred_y_decode), dim=-1).flatten(-2)
-                kp_decode = pred_kp * 4 * self.anchor_boxes[i].repeat(1,1,1,1,num_kpts) / self.img_size.repeat(num_kpts)
-                #pred_wh_decode = torch.exp(pred_wh.clamp(min=-10, max=10)) * self.anchor_boxes[i] / self.img_size
-                pred_wh_decode = pred_wh * 4 * self.anchor_boxes[i] / self.img_size
-
+                kp_decode = torch.stack((pred_kp_x_decode, pred_kp_y_decode), dim=-1).flatten(-2)
+                
                 # Use exp to ensure positive width/height values and avoid NaN in IoU loss
                 pred_coord = torch.cat([pred_x_box_decode, pred_y_box_decode, pred_wh_decode], dim=-1)
                 
@@ -110,9 +106,7 @@ class YOLOKeypointLoss(YOLOLoss):
                     # Ensure no NaN values in IoU loss
                     raw_iou_loss = torch.clamp(raw_iou_loss, min=0, max=2)
                     iou_loss = raw_iou_loss.mean()
-                    
-                    kp_loss = F.mse_loss(kp_decode[pos_mask], assigned_kp[pos_mask], reduction='mean')
-                    kp_loss_value += self.lambda_scales[i] * kp_loss.item()
+                    kp_loss = F.smooth_l1_loss(kp_decode[pos_mask], assigned_kp[pos_mask], reduction='mean')
                     
                     if self.assign_conf_method == 'iou':
                         assigned_conf[pos_mask] = (1 - raw_iou_loss).detach().clamp(min=0., max=1.)
@@ -125,7 +119,7 @@ class YOLOKeypointLoss(YOLOLoss):
                     conf_loss = self.bce_loss_func(pred_conf, assigned_conf)
         
                     loss_per_layer = (self.lambda_kp * kp_loss + 
-                                      self.lambda_coord + iou_loss + 
+                                      self.lambda_coord * iou_loss + 
                                       self.lambda_obj * conf_loss + 
                                        class_loss )
                     if self.use_noobj_loss:
@@ -136,11 +130,10 @@ class YOLOKeypointLoss(YOLOLoss):
                         total_loss += self.lambda_scales[i] * loss_per_layer
 
 
-
-            iou_loss_value += self.lambda_scales[i] * iou_loss.item()
-            kp_loss_value += self.lambda_scales[i] * kp_loss.item()
-            conf_loss_value += self.lambda_scales[i] * conf_loss.item()
-            class_loss_value += self.lambda_scales[i] * class_loss.item()
+                    kp_loss_value += self.lambda_scales[i] * kp_loss.item()
+                    iou_loss_value += self.lambda_scales[i] * iou_loss.item()
+                    conf_loss_value += self.lambda_scales[i] * conf_loss.item()
+                    class_loss_value += self.lambda_scales[i] * class_loss.item()
              
         pos_cnt = pos_mask.sum().item()
         pos_ratio_kp = 0

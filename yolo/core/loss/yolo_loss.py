@@ -234,6 +234,11 @@ class YOLOLoss(nn.Module):
         grid_h, grid_w = grid_size
         device = bboxes.device
 
+        N = bboxes.shape[0]
+        A = self.num_anchor_per_grid
+
+        anchor_wh = anchor_boxes.view(A, 2).to(device) / self.img_size
+ 
         if bboxes.shape[1] == 5:
             batch_idx, x_center, y_center, width, height = bboxes.unbind(dim=1)
             D = 4
@@ -241,12 +246,15 @@ class YOLOLoss(nn.Module):
             ub = bboxes.unbind(dim=1)
             batch_idx, x_center, y_center, width, height = ub[0], ub[1], ub[2], ub[3], ub[4]
             D = 12
-
+            #kp_x = bboxes[...,5::2]
+            #kp_y = bboxes[...,6::2]
+            #kp_offset_x = (kp_x - x_center) / (width * 0.5)
+            #kp_offset_y = (kp_y - y_center) / (height * 0.5)
+            #bboxes = bboxes.clone()
+            #bboxes[...,5::2] = kp_offset_x
+            #bboxes[...,6::2] = kp_offset_y
+ 
         batch_idx = batch_idx.long()
-        N = bboxes.shape[0]
-        A = self.num_anchor_per_grid
-
-        anchor_wh = anchor_boxes.view(A, 2).to(device) / self.img_size
         iou = self.cal_single_grid_iou(width.unsqueeze(1), 
                                        height.unsqueeze(1), 
                                        anchor_wh[:, 0].unsqueeze(0), 
@@ -278,6 +286,7 @@ class YOLOLoss(nn.Module):
         a_idx = a_idx.reshape(-1)
         cls_idx = cls_idx.reshape(-1)
         boxes = boxes.reshape(-1, D)
+
 
         valid_mask = iou >= self.match_iou_thres
         iou = iou[valid_mask]
